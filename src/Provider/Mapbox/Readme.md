@@ -27,38 +27,23 @@ This provider targets the **Mapbox Geocoding API v6**. If you rely on the v5 API
 
 ```php
 $provider = new Mapbox($client, $accessToken);
-// optional: country filter (ISO 3166 alpha-2) and permanent result storage
-$provider = new Mapbox($client, $accessToken, 'US', true);
+// optional: restrict the results to one or more ISO 3166 alpha-2 countries
+$provider = new Mapbox($client, $accessToken, 'US');
+// optional: store the results permanently (v6 `permanent` parameter)
+$provider = new Mapbox($client, $accessToken, null, Mapbox::GEOCODING_MODE_PLACES_PERMANENT);
 
 // Forward geocoding
 $provider->geocodeQuery(GeocodeQuery::create('149 9th St, San Francisco, CA 94103'));
-
-// Forward geocoding with options (query data)
-$query = GeocodeQuery::create('washi')
-    ->withData('autocomplete', true)                    // prefix-style matching (on by default)
-    ->withData('location_type', Mapbox::TYPE_STREET)    // or an array of Mapbox::TYPE_* constants
-    ->withData('proximity', '-120.09,47.60')            // or 'ip'
-    ->withData('worldview', 'us')
-    ->withData('country', 'US');
-
-// v6 Structured Input: typed fields replace the free-text query (the text is not sent)
-$query = GeocodeQuery::create('2595 Lucky John Dr, Park City, UT 84060')
-    ->withData('address_number', '2595')
-    ->withData('street', 'Lucky John Dr')
-    ->withData('place', 'Park City')
-    ->withData('region', 'UT')
-    ->withData('postcode', '84060');
-// Any of address_line1, address_number, street, block, place, region, postcode,
-// locality, neighborhood triggers Structured Input; autocomplete defaults to false.
 
 // Reverse geocoding
 $provider->reverseQuery(ReverseQuery::fromCoordinates(48.8631507, 2.388911));
 ```
 
-Results are `Geocoder\Provider\Mapbox\Model\MapboxAddress` instances. Besides the regular
-address data they expose `getId()`, `getStreetName()`, `getStreetNumber()`,
-`getResultType()`, `getFormattedAddress()`, `getNeighborhood()`,
-`getMatchCode()` / `getMatchConfidence()` (v6 Smart Address Match) and `getAccuracy()`.
+Options can be set as query data: `location_type` (one or more `Mapbox::TYPE_*`
+constants), `autocomplete` (the v6 replacement for the v5 `fuzzy_match`) and the v6
+Structured Input fields (`address_line1`, `address_number`, `street`, `block`, `place`,
+`region`, `postcode`, `locality`, `neighborhood`), which replace the free-text query
+when set.
 
 ### Contribute
 

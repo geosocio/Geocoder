@@ -74,22 +74,236 @@ class MapboxTest extends BaseTestCase
         $provider->geocodeQuery(GeocodeQuery::create('10 avenue Gambetta, Paris, France'));
     }
 
-    public function testGeocodeWithInvalidApiKey(): void
+    // v6 has no `poi`/`poi.landmark` types and the v6 dataset answers this query
+    // with a different place (Princes Risborough), so the POI types and the
+    // assertions below had to change
+    public function testGeocodePlaceWithLocale(): void
     {
-        // The v6 API answers 401 for an invalid token (v5 answered 403).
-        // Both status codes map to InvalidCredentials in AbstractHttpProvider.
-        $this->expectException(\Geocoder\Exception\InvalidCredentials::class);
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
 
-        $provider = new Mapbox($this->getMockedHttpClient('', 401), 'api_key');
-        $provider->geocodeQuery(GeocodeQuery::create('10 avenue Gambetta, Paris, France'));
+        $query = GeocodeQuery::create('princ'); // Princes Risborough
+        $query = $query->withLocale('it');
+        $query = $query->withBounds(new Bounds(
+            35.82809688193029,
+            -11.36323261153737,
+            59.05992036364424,
+            34.33947713277206
+        ));
+        $query = $query->withLimit(1);
+        $query = $query->withData('location_type', [
+            Mapbox::TYPE_PLACE,
+            Mapbox::TYPE_LOCALITY,
+            Mapbox::TYPE_NEIGHBORHOOD,
+        ]);
+
+        $results = $provider->geocodeQuery($query);
+
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(1, $results);
+
+        /** @var MapboxAddress $result */
+        $result = $results->first();
+        $this->assertInstanceOf(MapboxAddress::class, $result);
+        $this->assertEqualsWithDelta(51.724422, $result->getCoordinates()->getLatitude(), 0.001);
+        $this->assertEqualsWithDelta(-0.83069, $result->getCoordinates()->getLongitude(), 0.001);
+        $this->assertEquals('Princes Risborough', $result->getStreetName());
+        $this->assertEquals('Princes Risborough', $result->getLocality());
+        $this->assertEquals('Inghilterra', $result->getAdminLevels()->get(2)->getName());
+        $this->assertEquals('ENG', $result->getAdminLevels()->get(2)->getCode());
+        $this->assertEquals('Regno Unito', $result->getCountry()->getName());
+        $this->assertEquals('GB', $result->getCountry()->getCode());
+        $this->assertEquals('dXJuOm1ieHBsYzpoMmhQ', $result->getId());
+
+        // not provided
+        $this->assertNull($result->getPostalCode());
+        $this->assertNull($result->getStreetNumber());
+        $this->assertNull($result->getTimezone());
     }
 
-    public function testReverseWithInvalidResponse(): void
+    public function testGeocodeWithRealAddress(): void
+    {
+        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
+            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
+        }
+
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
+        $results = $provider->geocodeQuery(GeocodeQuery::create('149 9th St, San Francisco, CA 94103'));
+
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(5, $results);
+
+        /** @var MapboxAddress $result */
+        $result = $results->first();
+        $this->assertInstanceOf(MapboxAddress::class, $result);
+        $this->assertEqualsWithDelta(37.77572, $result->getCoordinates()->getLatitude(), 0.001);
+        $this->assertEqualsWithDelta(-122.41362, $result->getCoordinates()->getLongitude(), 0.001);
+        $this->assertNull($result->getBounds());
+        $this->assertEquals(149, $result->getStreetNumber());
+        $this->assertEquals('9th Street', $result->getStreetName());
+        $this->assertEquals(94103, $result->getPostalCode());
+        $this->assertEquals('San Francisco', $result->getLocality());
+        $this->assertEquals('California', $result->getAdminLevels()->get(2)->getName());
+        $this->assertEquals('CA', $result->getAdminLevels()->get(2)->getCode());
+        $this->assertEquals('San Francisco', $result->getAdminLevels()->get(1)->getName());
+        $this->assertEquals('United States', $result->getCountry()->getName());
+        $this->assertEquals('US', $result->getCountry()->getCode());
+        // v6 ids use the mapbox_id format
+        $this->assertEquals('dXJuOm1ieGFkcjo3Njg3YjZmNy01YmZkLTQzMjItOGMzOS02OGE1NDhmZWYwM2U', $result->getId());
+
+        // not provided
+        $this->assertNull($result->getTimezone());
+    }
+
+    public function testReverse(): void
     {
         $this->expectException(InvalidServerResponse::class);
 
         $provider = new Mapbox($this->getMockedHttpClient(), 'access_token');
         $provider->reverseQuery(ReverseQuery::fromCoordinates(1, 2));
+    }
+
+    public function testReverseWithRealCoordinates(): void
+    {
+        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
+            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
+        }
+
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
+        $results = $provider->reverseQuery(ReverseQuery::fromCoordinates(48.8631507, 2.388911));
+
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(4, $results);
+
+        /** @var MapboxAddress $result */
+        $result = $results->first();
+        $this->assertInstanceOf(MapboxAddress::class, $result);
+        // the v6 dataset answers 12 (not 8) Avenue Gambetta at these coordinates
+        $this->assertEquals(12, $result->getStreetNumber());
+        $this->assertEquals('Avenue Gambetta', $result->getStreetName());
+        $this->assertEquals(75020, $result->getPostalCode());
+        $this->assertEquals('Paris', $result->getLocality());
+        // v6 also returns the region (Île-de-France) in the context
+        $this->assertCount(2, $result->getAdminLevels());
+        $this->assertEquals('Paris', $result->getAdminLevels()->get(1)->getName());
+        $this->assertEquals('Île-de-France', $result->getAdminLevels()->get(2)->getName());
+        $this->assertEquals('IDF', $result->getAdminLevels()->get(2)->getCode());
+        $this->assertEquals('France', $result->getCountry()->getName());
+        $this->assertEquals('FR', $result->getCountry()->getCode());
+        // v6 ids use the mapbox_id format
+        $this->assertEquals('dXJuOm1ieGFkcjpjM2M2NWFjNC1hMTExLTQ1NDItOGIxNi05ZDg1Y2I4YjYzMDc', $result->getId());
+    }
+
+    public function testGeocodeWithInvalidApiKey(): void
+    {
+        $this->expectException(\Geocoder\Exception\InvalidCredentials::class);
+
+        $provider = new Mapbox($this->getMockedHttpClient('', 403), 'api_key');
+        $provider->geocodeQuery(GeocodeQuery::create('10 avenue Gambetta, Paris, France'));
+    }
+
+    public function testGeocodeWithRealValidApiKey(): void
+    {
+        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
+            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
+        }
+
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
+
+        // v6 treats "&" as the intersection search connector, so the original
+        // "116th St & Broadway" query no longer matches any address
+        $results = $provider->geocodeQuery(GeocodeQuery::create('1600 Pennsylvania Avenue NW, Washington, DC 20500'));
+
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(2, $results);
+
+        /** @var MapboxAddress $result */
+        $result = $results->first();
+        $this->assertInstanceOf(MapboxAddress::class, $result);
+        $this->assertEquals('Pennsylvania Avenue Northwest', $result->getStreetName());
+        $this->assertEquals(20500, $result->getPostalCode());
+        $this->assertCount(2, $result->getAdminLevels());
+        $this->assertEquals('United States', $result->getCountry()->getName());
+        $this->assertEquals('US', $result->getCountry()->getCode());
+        $this->assertEquals('dXJuOm1ieGFkcjoxMDg4MTIxNi1mZTUwLTQyM2QtOWNjYS00ODQxYjNjMmFkNTA', $result->getId());
+        $this->assertNotNull($result->getCoordinates()->getLatitude());
+        $this->assertNotNull($result->getCoordinates()->getLongitude());
+        $this->assertEqualsWithDelta(38.897684, $result->getCoordinates()->getLatitude(), 0.001);
+        $this->assertEqualsWithDelta(-77.036574, $result->getCoordinates()->getLongitude(), 0.001);
+        $this->assertEquals('Washington', $result->getLocality());
+        $this->assertEquals('Washington', $result->getAdminLevels()->get(1)->getName());
+        $this->assertEquals('DC', $result->getAdminLevels()->get(2)->getCode());
+    }
+
+    // v6 removed the v5 `fuzzyMatch` parameter; `autocomplete` is its replacement
+    public function testGeocodeWithAutocompleteEnabled(): void
+    {
+        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
+            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
+        }
+
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
+
+        $query = GeocodeQuery::create('washi'); // Washington
+        $query = $query->withData('autocomplete', true);
+        $query = $query->withBounds(new Bounds(
+            45.54372254,
+            -124.83609163,
+            49.00243912,
+            -116.91742984
+        ));
+        $query = $query->withData('location_type', [
+            Mapbox::TYPE_REGION,
+            Mapbox::TYPE_NEIGHBORHOOD,
+            Mapbox::TYPE_STREET,
+            Mapbox::TYPE_PLACE,
+            Mapbox::TYPE_LOCALITY,
+        ]);
+
+        $results = $provider->geocodeQuery($query);
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(5, $results);
+
+        /** @var MapboxAddress $first */
+        $first = $results->first();
+        $this->assertEquals(['region'], $first->getResultType());
+        $this->assertEquals('Washington', $first->getStreetName());
+        $this->assertEquals('Washington', $first->getAdminLevels()->get(2)->getName());
+        $this->assertEquals('WA', $first->getAdminLevels()->get(2)->getCode());
+    }
+
+    // v6 removed the v5 `fuzzyMatch` parameter; `autocomplete` is its replacement
+    public function testGeocodeWithAutocompleteDisabled(): void
+    {
+        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
+            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
+        }
+
+        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
+
+        $query = GeocodeQuery::create('washi'); // Yashi Road
+        $query = $query->withData('autocomplete', false);
+        $query = $query->withBounds(new Bounds(
+            45.54372254,
+            -124.83609163,
+            49.00243912,
+            -116.91742984
+        ));
+        $query = $query->withData('location_type', [
+            Mapbox::TYPE_REGION,
+            Mapbox::TYPE_NEIGHBORHOOD,
+            Mapbox::TYPE_STREET,
+            Mapbox::TYPE_PLACE,
+            Mapbox::TYPE_LOCALITY,
+        ]);
+
+        $results = $provider->geocodeQuery($query);
+        $this->assertInstanceOf(AddressCollection::class, $results);
+        $this->assertCount(1, $results);
+
+        /** @var MapboxAddress $first */
+        $first = $results->first();
+        $this->assertEquals(['street'], $first->getResultType());
+        $this->assertEquals('Yashi Road', $first->getStreetName());
     }
 
     private function assertRequestUrl(string $expectedUrl, callable $request): void
@@ -130,23 +344,19 @@ class MapboxTest extends BaseTestCase
             .'&bbox=-124.83609163%2C45.54372254%2C-116.91742984%2C49.00243912'
             .'&types=address%2Cstreet'
             .'&autocomplete=true'
-            .'&proximity=-120.09%2C47.60'
-            .'&worldview=us'
             .'&country=US'
             .'&language=en'
             .'&limit=10'
             .'&permanent=true'
             .'&access_token=access_token',
             static function ($client) {
-                $provider = new Mapbox($client, 'access_token', 'US', true);
+                $provider = new Mapbox($client, 'access_token', 'US', Mapbox::GEOCODING_MODE_PLACES_PERMANENT);
                 $query = GeocodeQuery::create('wahsington')
                     ->withLocale('en')
                     ->withBounds(new Bounds(45.54372254, -124.83609163, 49.00243912, -116.91742984))
                     ->withLimit(10)
                     ->withData('location_type', [Mapbox::TYPE_ADDRESS, Mapbox::TYPE_STREET])
-                    ->withData('autocomplete', true)
-                    ->withData('proximity', '-120.09,47.60')
-                    ->withData('worldview', 'us');
+                    ->withData('autocomplete', true);
                 $provider->geocodeQuery($query);
             }
         );
@@ -154,8 +364,7 @@ class MapboxTest extends BaseTestCase
 
     public function testForwardGeocodeUrlWithStructuredInput(): void
     {
-        // Structured Input: the query text is NOT sent; fields use their v6 names.
-        // autocomplete defaults to false for structured input (Mapbox guidance).
+        // Structured Input: the query text is NOT sent; autocomplete defaults to false
         $this->assertRequestUrl(
             'https://api.mapbox.com/search/geocode/v6/forward'
             .'?address_number=2595'
@@ -177,26 +386,6 @@ class MapboxTest extends BaseTestCase
                     ->withData('region', 'UT')
                     ->withData('postcode', '84060')
                     ->withData('country', 'US');
-                $provider->geocodeQuery($query);
-            }
-        );
-    }
-
-    public function testForwardGeocodeUrlWithStructuredInputAndExplicitAutocomplete(): void
-    {
-        // an explicit autocomplete value overrides the structured-input default
-        $this->assertRequestUrl(
-            'https://api.mapbox.com/search/geocode/v6/forward'
-            .'?street=9th+Street'
-            .'&types=address'
-            .'&autocomplete=true'
-            .'&limit=5'
-            .'&access_token=access_token',
-            static function ($client) {
-                $provider = new Mapbox($client, 'access_token');
-                $query = GeocodeQuery::create('9th Street')
-                    ->withData('street', '9th Street')
-                    ->withData('autocomplete', true);
                 $provider->geocodeQuery($query);
             }
         );
@@ -303,7 +492,7 @@ class MapboxTest extends BaseTestCase
 
     public function testParseForwardPlaceFeature(): void
     {
-        // place feature: no context.address; name is the place name; region code may be 3 letters
+        // place feature: no context.address; region code may be 3 letters
         $json = <<<'JSON'
         {
             "type": "FeatureCollection",
@@ -357,7 +546,7 @@ class MapboxTest extends BaseTestCase
 
     public function testParseForwardStreetFeature(): void
     {
-        // v6 street feature: street name comes from context.street
+        // street feature: street name comes from context.street
         $json = <<<'JSON'
         {
             "type": "FeatureCollection",
@@ -454,225 +643,6 @@ class MapboxTest extends BaseTestCase
 
         $provider = new Mapbox($this->getMockedHttpClient('{invalid json'), 'access_token');
         $provider->geocodeQuery(GeocodeQuery::create('10 Downing St, London'));
-    }
-
-    public function testGeocodeWithRealAddress(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-        $results = $provider->geocodeQuery(GeocodeQuery::create('149 9th St, San Francisco, CA 94103'));
-
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(5, $results);
-
-        /** @var MapboxAddress $result */
-        $result = $results->first();
-        $this->assertInstanceOf(MapboxAddress::class, $result);
-        $this->assertEqualsWithDelta(37.7757, $result->getCoordinates()->getLatitude(), 0.001);
-        $this->assertEqualsWithDelta(-122.413709, $result->getCoordinates()->getLongitude(), 0.001);
-        $this->assertEquals('9th Street', $result->getStreetName());
-        $this->assertEquals('149', $result->getStreetNumber());
-        $this->assertEquals('94103', $result->getPostalCode());
-        $this->assertEquals('San Francisco', $result->getLocality());
-        $this->assertCount(2, $result->getAdminLevels());
-        $this->assertEquals('California', $result->getAdminLevels()->get(2)->getName());
-        $this->assertEquals('CA', $result->getAdminLevels()->get(2)->getCode());
-        $this->assertEquals('United States', $result->getCountry()->getName());
-        $this->assertEquals('US', $result->getCountry()->getCode());
-        $this->assertEquals('149 9th Street, San Francisco, California 94103, United States', $result->getFormattedAddress());
-        $this->assertEquals('South of Market', $result->getNeighborhood());
-        $this->assertEquals(['address'], $result->getResultType());
-        $this->assertEquals('exact', $result->getMatchConfidence());
-        $this->assertEquals('rooftop', $result->getAccuracy());
-
-        // not provided
-        $this->assertNull($result->getTimezone());
-    }
-
-    public function testGeocodeWithRealAddressInDc(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-        $results = $provider->geocodeQuery(GeocodeQuery::create('1600 Pennsylvania Avenue NW, Washington, DC 20500'));
-
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(2, $results);
-
-        /** @var MapboxAddress $result */
-        $result = $results->first();
-        $this->assertInstanceOf(MapboxAddress::class, $result);
-        $this->assertEqualsWithDelta(38.897684, $result->getCoordinates()->getLatitude(), 0.001);
-        $this->assertEqualsWithDelta(-77.036574, $result->getCoordinates()->getLongitude(), 0.001);
-        $this->assertEquals('Pennsylvania Avenue Northwest', $result->getStreetName());
-        $this->assertEquals('1600', $result->getStreetNumber());
-        $this->assertEquals('20500', $result->getPostalCode());
-        $this->assertEquals('Washington', $result->getLocality());
-        $this->assertCount(2, $result->getAdminLevels());
-        $this->assertEquals('District of Columbia', $result->getAdminLevels()->get(2)->getName());
-        $this->assertEquals('DC', $result->getAdminLevels()->get(2)->getCode());
-        $this->assertEquals('United States', $result->getCountry()->getName());
-        $this->assertEquals('US', $result->getCountry()->getCode());
-        $this->assertEquals('1600 Pennsylvania Avenue Northwest, Washington, District of Columbia 20500, United States', $result->getFormattedAddress());
-        $this->assertEquals('exact', $result->getMatchConfidence());
-        $this->assertEquals('rooftop', $result->getAccuracy());
-    }
-
-    public function testReverseWithRealCoordinates(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-        $results = $provider->reverseQuery(ReverseQuery::fromCoordinates(48.8631507, 2.388911));
-
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(4, $results);
-
-        /** @var MapboxAddress $result */
-        $result = $results->first();
-        $this->assertInstanceOf(MapboxAddress::class, $result);
-        $this->assertEquals('12', $result->getStreetNumber());
-        $this->assertEquals('Avenue Gambetta', $result->getStreetName());
-        $this->assertEquals('75020', $result->getPostalCode());
-        $this->assertEquals('Paris', $result->getLocality());
-        $this->assertCount(2, $result->getAdminLevels());
-        $this->assertEquals('Paris', $result->getAdminLevels()->get(1)->getName());
-        $this->assertEquals('Île-de-France', $result->getAdminLevels()->get(2)->getName());
-        $this->assertEquals('IDF', $result->getAdminLevels()->get(2)->getCode());
-        $this->assertEquals('France', $result->getCountry()->getName());
-        $this->assertEquals('FR', $result->getCountry()->getCode());
-        $this->assertEquals('12 Avenue Gambetta, 75020 Paris, France', $result->getFormattedAddress());
-        $this->assertEquals('rooftop', $result->getAccuracy());
-
-        // not provided by reverse geocoding
-        $this->assertNull($result->getMatchConfidence());
-        $this->assertNull($result->getNeighborhood());
-    }
-
-    public function testGeocodePlaceWithLocale(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-
-        $query = GeocodeQuery::create('princ');
-        $query = $query->withLocale('it');
-        $query = $query->withBounds(new Bounds(
-            35.82809688193029,
-            -11.36323261153737,
-            59.05992036364424,
-            34.33947713277206
-        ));
-        $query = $query->withLimit(1);
-        $query = $query->withData('location_type', [
-            Mapbox::TYPE_PLACE,
-            Mapbox::TYPE_LOCALITY,
-            Mapbox::TYPE_NEIGHBORHOOD,
-        ]);
-
-        $results = $provider->geocodeQuery($query);
-
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(1, $results);
-
-        /** @var MapboxAddress $result */
-        $result = $results->first();
-        $this->assertInstanceOf(MapboxAddress::class, $result);
-        $this->assertEqualsWithDelta(51.724422, $result->getCoordinates()->getLatitude(), 0.001);
-        $this->assertEqualsWithDelta(-0.83069, $result->getCoordinates()->getLongitude(), 0.001);
-        $this->assertEquals('Princes Risborough', $result->getStreetName());
-        $this->assertEquals(['place'], $result->getResultType());
-        $this->assertEquals('Princes Risborough', $result->getLocality());
-        $this->assertCount(2, $result->getAdminLevels());
-        $this->assertEquals('Princes Risborough', $result->getAdminLevels()->get(1)->getName());
-        $this->assertEquals('Inghilterra', $result->getAdminLevels()->get(2)->getName());
-        $this->assertEquals('ENG', $result->getAdminLevels()->get(2)->getCode());
-        $this->assertEquals('Regno Unito', $result->getCountry()->getName());
-        $this->assertEquals('GB', $result->getCountry()->getCode());
-
-        // not provided
-        $this->assertNull($result->getPostalCode());
-        $this->assertNull($result->getStreetNumber());
-        $this->assertNull($result->getMatchConfidence());
-    }
-
-    public function testGeocodeWithAutocompleteEnabled(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-
-        $query = GeocodeQuery::create('washi');
-        $query = $query->withData('autocomplete', true);
-        $query = $query->withBounds(new Bounds(
-            45.54372254,
-            -124.83609163,
-            49.00243912,
-            -116.91742984
-        ));
-        $query = $query->withData('location_type', [
-            Mapbox::TYPE_REGION,
-            Mapbox::TYPE_NEIGHBORHOOD,
-            Mapbox::TYPE_STREET,
-            Mapbox::TYPE_PLACE,
-            Mapbox::TYPE_LOCALITY,
-        ]);
-
-        $results = $provider->geocodeQuery($query);
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(5, $results);
-
-        /** @var MapboxAddress $first */
-        $first = $results->first();
-        $this->assertEquals(['region'], $first->getResultType());
-        $this->assertEquals('Washington', $first->getStreetName());
-        $this->assertEquals('Washington', $first->getAdminLevels()->get(2)->getName());
-        $this->assertEquals('WA', $first->getAdminLevels()->get(2)->getCode());
-    }
-
-    public function testGeocodeWithAutocompleteDisabled(): void
-    {
-        if (!isset($_SERVER['MAPBOX_GEOCODING_KEY'])) {
-            $this->markTestSkipped('You need to configure the MAPBOX_GEOCODING_KEY value in phpunit.xml');
-        }
-
-        $provider = new Mapbox($this->getHttpClient($_SERVER['MAPBOX_GEOCODING_KEY']), $_SERVER['MAPBOX_GEOCODING_KEY']);
-
-        $query = GeocodeQuery::create('washi');
-        $query = $query->withData('autocomplete', false);
-        $query = $query->withBounds(new Bounds(
-            45.54372254,
-            -124.83609163,
-            49.00243912,
-            -116.91742984
-        ));
-        $query = $query->withData('location_type', [
-            Mapbox::TYPE_REGION,
-            Mapbox::TYPE_NEIGHBORHOOD,
-            Mapbox::TYPE_STREET,
-            Mapbox::TYPE_PLACE,
-            Mapbox::TYPE_LOCALITY,
-        ]);
-
-        $results = $provider->geocodeQuery($query);
-        $this->assertInstanceOf(AddressCollection::class, $results);
-        $this->assertCount(1, $results);
-
-        /** @var MapboxAddress $first */
-        $first = $results->first();
-        $this->assertEquals(['street'], $first->getResultType());
-        $this->assertEquals('Yashi Road', $first->getStreetName());
     }
 
     public function testGeocodeWithStructuredInput(): void
